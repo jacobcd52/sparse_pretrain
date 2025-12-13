@@ -6,4 +6,5 @@ Model parameters: 203,681,280
 Total training steps: 6,103
 Tokens per step: 16,384
 Starting training...
-Training:  53%|███▋   | 3226/6103 [09:47<08:37,  5.56it/s, loss=2.2624, lr=6.09e-03, L0=0.0156]
+Training: 100%|███████| 6103/6103 [18:31<00:00,  5.54it/s, loss=2.0150, lr=0.00e+00, L0=0.0156]
+Training complete!

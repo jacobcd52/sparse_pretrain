@@ -24,7 +24,154 @@ from accelerate.utils import set_seed
 from .config import Config
 from .model import SparseGPT, create_model
 from .sparsity import WeightSparsifier, SharkfinScheduler, clip_grad_rms_, normalize_grad_rms_
-from .data import create_dataloader
+from .data import create_dataloader, create_validation_data
+
+
+def upload_to_hub(
+    model: nn.Module,
+    config: "Config",
+    repo_id: str,
+    checkpoint_dir: str,
+    wandb_url: Optional[str] = None,
+):
+    """
+    Upload model and config to HuggingFace Hub.
+    
+    Args:
+        model: The trained model
+        config: Training configuration
+        repo_id: HuggingFace repo ID (e.g., "username/model-name")
+        checkpoint_dir: Local checkpoint directory
+        wandb_url: Optional W&B run URL to include in README
+    """
+    from huggingface_hub import HfApi, create_repo
+    
+    print(f"\nUploading to HuggingFace Hub: {repo_id}")
+    
+    api = HfApi()
+    
+    # Create repo if it doesn't exist
+    try:
+        create_repo(repo_id, exist_ok=True, repo_type="model")
+    except Exception as e:
+        print(f"Note: {e}")
+    
+    # Save model state dict
+    checkpoint_path = Path(checkpoint_dir)
+    model_path = checkpoint_path / "pytorch_model.bin"
+    torch.save(model.state_dict(), model_path)
+    
+    # Save config as JSON
+    config_path = checkpoint_path / "config.json"
+    config_dict = {
+        "model_config": {
+            "n_layer": config.model.n_layer,
+            "d_model": config.model.d_model,
+            "n_ctx": config.model.n_ctx,
+            "d_head": config.model.d_head,
+            "d_mlp": config.model.d_mlp,
+            "vocab_size": config.model.vocab_size,
+            "use_rms_norm": config.model.use_rms_norm,
+            "tie_embeddings": config.model.tie_embeddings,
+            "use_positional_embeddings": config.model.use_positional_embeddings,
+            "use_bigram_table": config.model.use_bigram_table,
+            "use_attention_sinks": config.model.use_attention_sinks,
+            "activation": config.model.activation,
+            "dropout": config.model.dropout,
+            "use_bias": config.model.use_bias,
+        },
+        "sparsity_config": {
+            "enable_weight_sparsity": config.sparsity.enable_weight_sparsity,
+            "target_l0_fraction": config.sparsity.target_l0_fraction,
+            "enable_activation_sparsity": config.sparsity.enable_activation_sparsity,
+            "activation_topk_fraction": config.sparsity.activation_topk_fraction,
+        },
+        "training_config": {
+            "total_tokens": config.training.total_tokens,
+            "batch_size": config.training.batch_size,
+            "dataset_name": config.training.dataset_name,
+            "tokenizer_name": config.training.tokenizer_name,
+        },
+    }
+    with open(config_path, "w") as f:
+        json.dump(config_dict, f, indent=2)
+    
+    # Save the full YAML config
+    yaml_path = checkpoint_path / "training_config.yaml"
+    config.to_yaml(str(yaml_path))
+    
+    # Create a simple README
+    readme_path = checkpoint_path / "README.md"
+    
+    # Build wandb section if URL is available
+    wandb_section = ""
+    if wandb_url:
+        wandb_section = f"""
+## Training Run
+
+- **W&B Run**: [{wandb_url}]({wandb_url})
+"""
+    
+    readme_content = f"""# {repo_id.split('/')[-1]}
+
+Weight-sparse transformer trained with the procedure from Gao et al. (2025).
+
+## Model Details
+
+- **Layers**: {config.model.n_layer}
+- **Model Dimension**: {config.model.d_model}
+- **Context Length**: {config.model.n_ctx}
+- **Head Dimension**: {config.model.d_head}
+- **Vocabulary Size**: {config.model.vocab_size}
+
+## Sparsity
+
+- **Weight Sparsity**: {config.sparsity.enable_weight_sparsity}
+- **Target L0 Fraction**: {config.sparsity.target_l0_fraction}
+- **Activation Sparsity**: {config.sparsity.enable_activation_sparsity}
+
+## Training
+
+- **Dataset**: {config.training.dataset_name}
+- **Tokenizer**: {config.training.tokenizer_name}
+- **Total Tokens**: {config.training.total_tokens:,}
+{wandb_section}
+## Usage
+
+```python
+import torch
+from huggingface_hub import hf_hub_download
+
+# Download model
+model_path = hf_hub_download(repo_id="{repo_id}", filename="pytorch_model.bin")
+config_path = hf_hub_download(repo_id="{repo_id}", filename="config.json")
+
+# Load (requires the SparseGPT model class from this repo)
+state_dict = torch.load(model_path)
+```
+"""
+    with open(readme_path, "w") as f:
+        f.write(readme_content)
+    
+    # Upload files
+    files_to_upload = [
+        ("pytorch_model.bin", model_path),
+        ("config.json", config_path),
+        ("training_config.yaml", yaml_path),
+        ("README.md", readme_path),
+    ]
+    
+    for filename, filepath in files_to_upload:
+        if filepath.exists():
+            print(f"  Uploading {filename}...")
+            api.upload_file(
+                path_or_fileobj=str(filepath),
+                path_in_repo=filename,
+                repo_id=repo_id,
+                repo_type="model",
+            )
+    
+    print(f"  Done! Model available at: https://huggingface.co/{repo_id}")
 
 
 def count_parameters(model: nn.Module) -> dict:
@@ -108,6 +255,62 @@ def compute_activation_stats(logits: torch.Tensor, loss: torch.Tensor) -> dict:
     return stats
 
 
+@torch.no_grad()
+def evaluate_validation(
+    model: nn.Module,
+    val_batches: list,
+    batch_size: int = 16,
+    device: str = "cuda",
+) -> dict:
+    """
+    Evaluate model on validation data.
+    
+    Args:
+        model: The model to evaluate
+        val_batches: List of token tensors (each of shape (seq_length,))
+        batch_size: Batch size for evaluation
+        device: Device to use
+        
+    Returns:
+        Dictionary with validation metrics
+    """
+    model.eval()
+    
+    total_loss = 0.0
+    total_tokens = 0
+    
+    for i in range(0, len(val_batches), batch_size):
+        batch_tensors = val_batches[i:i+batch_size]
+        input_ids = torch.stack(batch_tensors).to(device)
+        
+        # Forward pass
+        logits, _, _ = model(input_ids, labels=None)
+        
+        # Compute loss
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = input_ids[:, 1:].contiguous()
+        
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            reduction='sum',
+        )
+        
+        total_loss += loss.item()
+        total_tokens += shift_labels.numel()
+    
+    model.train()
+    
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else 0.0
+    perplexity = math.exp(min(avg_loss, 100))
+    
+    return {
+        "val/loss": avg_loss,
+        "val/perplexity": perplexity,
+        "val/tokens": total_tokens,
+    }
+
+
 def save_checkpoint(
     accelerator: Accelerator,
     model: nn.Module,
@@ -136,7 +339,7 @@ def save_checkpoint(
             "sparsifier_state": {
                 "current_step": sparsifier.state.current_step,
                 "current_l0_fraction": sparsifier.state.current_l0_fraction,
-            },
+            } if sparsifier is not None else None,
             "scheduler_state": {
                 "current_step": scheduler.current_step,
             },
@@ -174,6 +377,7 @@ def train(config: Config):
     set_seed(config.training.seed)
     
     # Initialize W&B on main process
+    wandb_run_url = None
     if accelerator.is_main_process and config.training.use_wandb:
         wandb.init(
             project=config.training.wandb_project,
@@ -181,6 +385,8 @@ def train(config: Config):
             entity=config.training.wandb_entity,
             config=config.to_dict(),
         )
+        wandb_run_url = wandb.run.url
+        accelerator.print(f"W&B run: {wandb_run_url}")
         
         # Save config at the start
         config_path = Path(config.training.checkpoint_dir) / "config.yaml"
@@ -198,11 +404,28 @@ def train(config: Config):
         split=config.training.dataset_split,
         text_column=config.training.text_column,
         seed=config.training.seed,
+        process_index=accelerator.process_index,
+        num_processes=accelerator.num_processes,
     )
     
     # Update vocab size from tokenizer
     config.model.vocab_size = len(tokenizer)
     accelerator.print(f"Vocabulary size: {config.model.vocab_size}")
+    
+    # Create validation data
+    accelerator.print("Loading validation data...")
+    val_batches, val_desc = create_validation_data(
+        dataset_name=config.training.dataset_name,
+        tokenizer=tokenizer,
+        seq_length=config.model.n_ctx,
+        text_column=config.training.text_column,
+        val_split=config.training.val_split,
+        holdout_fraction=config.training.val_holdout_fraction,
+        max_tokens=config.training.val_max_batches * config.model.n_ctx * 16,  # Assume batch_size=16 for val
+        seed=config.training.seed + 1,  # Different seed from training
+    )
+    accelerator.print(f"  {val_desc}")
+    accelerator.print(f"  Validation batches: {len(val_batches)} ({len(val_batches) * config.model.n_ctx:,} tokens)")
     
     # Create model
     accelerator.print("Creating model...")
@@ -213,12 +436,6 @@ def train(config: Config):
     accelerator.print(f"Model parameters: {param_stats['total_params']:,}")
     if accelerator.is_main_process and config.training.use_wandb:
         wandb.log({"model/" + k: v for k, v in param_stats.items()}, step=0)
-    
-    # Enable gradient checkpointing if requested
-    if config.training.gradient_checkpointing:
-        # For our custom model, we'd need to implement this
-        # For now, we'll skip it
-        pass
     
     # Calculate training steps
     tokens_per_step = (
@@ -232,14 +449,24 @@ def train(config: Config):
     accelerator.print(f"Tokens per step: {tokens_per_step:,}")
     
     # Create optimizer
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.optimizer.learning_rate,
-        betas=(config.optimizer.beta1, config.optimizer.beta2),
-        eps=config.optimizer.eps,
-        weight_decay=config.optimizer.weight_decay,
-        fused=True,
-    )
+    # Prefer fused AdamW when available (CUDA + torch supports it), but fall back if unsupported.
+    try:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.optimizer.learning_rate,
+            betas=(config.optimizer.beta1, config.optimizer.beta2),
+            eps=config.optimizer.eps,
+            weight_decay=config.optimizer.weight_decay,
+            fused=True,
+        )
+    except TypeError:
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.optimizer.learning_rate,
+            betas=(config.optimizer.beta1, config.optimizer.beta2),
+            eps=config.optimizer.eps,
+            weight_decay=config.optimizer.weight_decay,
+        )
     
     # Create weight sparsifier
     sparsifier = WeightSparsifier(
@@ -272,6 +499,7 @@ def train(config: Config):
     step = 0
     tokens_seen = 0
     running_loss = 0.0
+    micro_batch_loss = 0.0  # Accumulate loss across micro-batches
     start_time = time.time()
     
     progress_bar = tqdm(
@@ -281,6 +509,7 @@ def train(config: Config):
     )
     
     data_iter = iter(dataloader)
+    grad_accum_steps = config.training.gradient_accumulation_steps
     
     # Set initial LR BEFORE first step (authors do this - step 0 has warmup LR of 0)
     scheduler.step()
@@ -296,7 +525,7 @@ def train(config: Config):
         input_ids = batch["input_ids"]
         labels = batch["labels"]
         
-        # Forward pass
+        # Forward/backward pass
         with accelerator.accumulate(model):
             # Forward pass - don't compute loss inside (to match authors who compute loss outside autocast)
             logits, _, _ = model(input_ids, labels=None)
@@ -310,6 +539,9 @@ def train(config: Config):
                 shift_labels.view(-1),
             )
             
+            # Accumulate loss for logging (average across micro-batches)
+            micro_batch_loss += loss.detach() / grad_accum_steps
+            
             # Backward pass
             accelerator.backward(loss)
             
@@ -319,10 +551,11 @@ def train(config: Config):
                 grad_rms = normalize_grad_rms_(model.parameters())
             else:
                 grad_rms = 0.0
-            
-            # Optimizer step
-            optimizer.step()
-            optimizer.zero_grad()
+
+            # Optimizer step ONLY when gradients are synchronized (i.e., end of accumulation)
+            if accelerator.sync_gradients:
+                optimizer.step()
+                optimizer.zero_grad()
         
         # Only update after gradient accumulation
         if accelerator.sync_gradients:
@@ -335,7 +568,8 @@ def train(config: Config):
             
             step += 1
             tokens_seen += tokens_per_step
-            running_loss += loss.item()
+            running_loss += micro_batch_loss.item()
+            micro_batch_loss = 0.0  # Reset for next accumulation cycle
             
             # Logging
             if step % config.training.log_every_n_steps == 0:
@@ -378,6 +612,21 @@ def train(config: Config):
                     weight_stats = compute_weight_stats(accelerator.unwrap_model(model))
                     log_dict.update(weight_stats)
                 
+                # Validation (at separate frequency)
+                if (
+                    accelerator.is_main_process
+                    and step % config.training.eval_every_n_steps == 0
+                    and len(val_batches) > 0
+                ):
+                    val_stats = evaluate_validation(
+                        model=accelerator.unwrap_model(model),
+                        val_batches=val_batches[:config.training.val_max_batches],
+                        batch_size=16,
+                        device=accelerator.device,
+                    )
+                    log_dict.update(val_stats)
+                    accelerator.print(f"  Step {step}: val_loss={val_stats['val/loss']:.4f}, val_ppl={val_stats['val/perplexity']:.2f}")
+                
                 if accelerator.is_main_process and config.training.use_wandb:
                     wandb.log(log_dict, step=step)
                 
@@ -417,6 +666,16 @@ def train(config: Config):
     )
     
     accelerator.print("Training complete!")
+    
+    # Upload to HuggingFace Hub if configured
+    if accelerator.is_main_process and config.training.hf_repo:
+        upload_to_hub(
+            model=accelerator.unwrap_model(model),
+            config=config,
+            repo_id=config.training.hf_repo,
+            checkpoint_dir=config.training.checkpoint_dir,
+            wandb_url=wandb_run_url,
+        )
     
     if accelerator.is_main_process and config.training.use_wandb:
         wandb.finish()

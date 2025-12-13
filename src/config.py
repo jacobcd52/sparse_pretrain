@@ -136,6 +136,11 @@ class TrainingConfig:
     log_sparsity_every_n_steps: int = 50  # log_sparsity_every
     eval_every_n_steps: int = 20  # val_every in authors' code
     
+    # Validation
+    val_split: Optional[str] = "test"  # Use "test" split if available, else hold out from train
+    val_holdout_fraction: float = 0.01  # Fraction to hold out if no test split (1%)
+    val_max_batches: int = 20  # Max batches to use for validation (val_max_steps in authors' code)
+    
     # W&B
     wandb_project: str = "circuit_sparsity"  # From authors' code
     wandb_run_name: Optional[str] = None
@@ -145,8 +150,10 @@ class TrainingConfig:
     # Reproducibility
     seed: int = 0  # From authors' code
     
+    # HuggingFace Hub
+    hf_repo: Optional[str] = None  # If set, upload final checkpoint to this repo (e.g., "username/model-name")
+    
     # Gradient checkpointing (to save memory)
-    gradient_checkpointing: bool = True
 
 
 @dataclass

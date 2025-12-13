@@ -62,10 +62,17 @@ training:
   log_sparsity_every_n_steps: 50
   eval_every_n_steps: 20
   
+  # Validation - uses "test" split if available, else holds out from train
+  val_split: test
+  val_holdout_fraction: 0.01
+  val_max_batches: 20
+  
   wandb_project: circuit_sparsity
   wandb_run_name: null
   wandb_entity: null
   use_wandb: true
   
   seed: 0
-  gradient_checkpointing: false
+  
+  # HuggingFace Hub - set to upload final checkpoint (e.g., "username/model-name")
+  hf_repo: null

@@ -11,14 +11,6 @@ This document explains design choices made in this implementation, particularly 
 
 **Config**: `model.d_model` (default: `1024`)
 
-### Residual Stream Activation
-**From authors' code**: An optional activation can be applied to the residual stream after each sub-block.
-
-**Options**: "identity" (default, no activation) or "relu"
-
-**Config**: `model.residual_activation` (default: `"identity"`)
-
-
 ### RMSNorm Instead of LayerNorm
 **Paper Section 1.3**: The paper uses RMSNorm instead of LayerNorm.
 
@@ -69,6 +61,31 @@ This document explains design choices made in this implementation, particularly 
 
 **Config**: `model.use_attention_sinks` (default: `true`)
 
+### Biases in Linear Layers
+**Our Implementation**: All linear layers (QKV projections, MLP layers, output projection) include bias terms by default.
+
+**Config**: `model.use_bias` (default: `true`)
+
+### Flash Attention
+**Our Implementation**: Uses PyTorch's `scaled_dot_product_attention` which automatically uses FlashAttention-2 when available.
+
+**Config**: `model.use_flash_attention` (default: `true`)
+
+### MLP Dimension
+**Standard Practice**: MLP hidden dimension is 4× the model dimension.
+
+**Config**: `model.d_mlp` (default: `4 * d_model`)
+
+### Activation Function
+**Standard GPT-2 Style**: Uses GELU activation in the MLP.
+
+**Config**: `model.activation` (default: `"gelu"`)
+
+### No Dropout
+**Our Implementation**: Dropout is disabled by default. The paper doesn't mention dropout, and sparse models may not benefit from it.
+
+**Config**: `model.dropout` (default: `0.0`)
+
 ## Sparsity Choices
 
 ### Post-Optimizer Magnitude Pruning
@@ -103,6 +120,18 @@ This document explains design choices made in this implementation, particularly 
 
 **Config**: `sparsity.min_weights_per_neuron` (default: `4`)
 
+### Biases and Norm Weights Are NOT Sparsified
+**Our Implementation**: We only sparsify 2D+ parameters (weight matrices). Biases (1D) and normalization weights are always kept dense.
+
+**Paper Claims**: The replication guide states "Sparsity is applied to ALL weights and biases, including token embeddings." The authors' reference code has a `dense_biases` option.
+
+**Our Deviation**: We skip 1D parameters entirely because:
+1. The paper's "bug" section mentions biases going "from dense to sparse abruptly" as problematic
+2. Biases have relatively few parameters and minimal impact on overall sparsity
+3. Sparsifying biases can cause numerical instability
+
+**Note**: This is a deviation from the paper. If you want to match the paper exactly, this would need to be changed.
+
 ### The L0 Scheduling "Bug"
 **Paper Section 2.4**: There was a bug where embeddings and biases went from dense to sparse abruptly mid-training.
 
@@ -130,14 +159,27 @@ This document explains design choices made in this implementation, particularly 
 
 ## Optimizer Choices (CRITICAL!)
 
-### CRITICAL: Adam with Manual Weight Decay
-**From authors' code**: They use vanilla `torch.optim.Adam` (NOT AdamW) and apply weight decay MANUALLY after the optimizer step: `p.data -= wd * lr * p.data`. This means weight decay scales with learning rate, unlike AdamW where it's decoupled.
+### Weight Decay: AdamW vs Manual
+**From authors' code**: They use vanilla `torch.optim.Adam` (NOT AdamW) and apply weight decay MANUALLY after the optimizer step: `p.data -= wd * lr * p.data`. This means weight decay scales with learning rate.
+
+**Our Implementation**: We use `torch.optim.AdamW` with built-in decoupled weight decay. This is slightly different from the authors' approach but is more standard and numerically stable.
+
+**Note**: The authors' manual weight decay only applies to 2D+ parameters (not biases). AdamW's built-in weight decay applies to all parameters by default. Consider setting `weight_decay=0` for biases if you want to match the authors exactly.
 
 ### CRITICAL: Gradient Normalization (NOT Clipping)
 **From authors' code**: They ALWAYS normalize gradients to RMS=1, not just clip when RMS > 1. This ensures gradients always have the same scale, which is fundamentally different from clipping.
 
+**Our Implementation**: We implement this correctly via `normalize_grad_rms_()` which always normalizes, not just clips.
+
 ### Sharkfin LR Schedule NOT Used by Default
 **From authors' code**: The sharkfin schedule (LR × 1/√L0) is only used in their legacy "pfrac" interface, not their simplified "frac_nonzero" interface.
+
+**Config**: `optimizer.use_sharkfin_schedule` (default: `false`)
+
+### Loss Computed Outside Autocast
+**From authors' code**: The cross-entropy loss is computed in full precision (float32), not in the autocast context (bf16/fp16).
+
+**Our Implementation**: We compute logits inside autocast but compute loss outside, matching the authors' approach. This improves numerical stability for the loss calculation.
 
 ### Unusually Large Epsilon (ε = 0.1)
 **Paper Section 4.1**: "ε = 0.1 (NOTE: unusually large epsilon!)"
@@ -160,7 +202,7 @@ This document explains design choices made in this implementation, particularly 
 
 **Reason**: "Smaller L0 requires larger learning rates." As we prune more weights, the remaining weights need larger updates to compensate.
 
-**Config**: `optimizer.use_sharkfin_schedule` (default: `true`)
+**Our Implementation**: Disabled by default (see "Sharkfin LR Schedule NOT Used by Default" above).
 
 ### 1% Warmup
 **Paper Section 4.4**: "Warmup for first 1% of training"
@@ -187,14 +229,29 @@ We use HuggingFace datasets in streaming mode because:
 ### Token-level Chunking
 We concatenate all text and chunk into fixed-length sequences. This is standard for language model pretraining and maximizes GPU utilization.
 
+### EOT Tokens Between Documents
+**Our Implementation**: We add an end-of-text (EOS) token between each document during tokenization. This matches standard practice and helps the model learn document boundaries.
+
+### Validation Data
+**Our Implementation**: We try to use a dedicated validation split (e.g., "test", "validation") if available. If not, we hold out a fraction of the training data.
+
+**Config**:
+- `training.val_split` (default: `"test"`) - Preferred validation split name
+- `training.val_holdout_fraction` (default: `0.01`) - Fraction to hold out if no val split
+- `training.val_max_batches` (default: `20`) - Maximum batches for validation
+
 ## Differences from Paper
 
-### Not Implemented
+### Intentional Deviations
 1. **The L0 scheduling bug**: We implement correct behavior (see above)
-2. **Circuit pruning**: This is for later
-3. **Evaluation tasks**: The 20 hand-crafted Python tasks are for later
-4. **Feature binarization**: Validation method for later
-5. **Bridges methodology**: Excluded per user request
+2. **Bias sparsification**: We don't sparsify biases; paper claims they do (see "Biases and Norm Weights Are NOT Sparsified")
+3. **Weight decay**: We use AdamW instead of Adam + manual weight decay (see "Weight Decay: AdamW vs Manual")
+
+### Not Implemented
+1. **Circuit pruning**: This is for later
+2. **Evaluation tasks**: The 20 hand-crafted Python tasks are for later
+3. **Feature binarization**: Validation method for later
+4. **Bridges methodology**: Excluded per user request
 
 ### Potentially Different
 1. **Dataset**: Paper uses Python code from GPT-4. User will specify their own dataset.

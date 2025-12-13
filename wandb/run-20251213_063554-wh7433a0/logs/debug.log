@@ -19,3 +19,8 @@ config: {'model': {'n_layer': 8, 'd_model': 1024, 'n_ctx': 256, 'd_head': 16, 'd
 2025-12-13 06:35:54,911 INFO    MainThread:270476 [wandb_run.py:_redirect():2438] Wrapping output streams.
 2025-12-13 06:35:54,911 INFO    MainThread:270476 [wandb_run.py:_redirect():2461] Redirects installed.
 2025-12-13 06:35:54,913 INFO    MainThread:270476 [wandb_init.py:init():1081] run started, returning control to user process
+2025-12-13 06:54:30,880 INFO    MainThread:270476 [wandb_run.py:_finish():2287] finishing run training-saes/circuit_sparsity/wh7433a0
+2025-12-13 06:54:30,880 INFO    MainThread:270476 [wandb_run.py:_atexit_cleanup():2486] got exitcode: 0
+2025-12-13 06:54:30,880 INFO    MainThread:270476 [wandb_run.py:_restore():2468] restore
+2025-12-13 06:54:30,881 INFO    MainThread:270476 [wandb_run.py:_restore():2474] restore done
+2025-12-13 06:54:32,089 INFO    MainThread:270476 [wandb_run.py:_footer_sync_info():3862] logging synced files
