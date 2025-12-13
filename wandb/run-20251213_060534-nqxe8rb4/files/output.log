@@ -1,0 +1,20 @@
+[34m[1mwandb[0m: [33mWARNING[0m Symlinked 1 file into the W&B run directory; call wandb.save again to sync new files.
+Loading dataset and tokenizer...
+Vocabulary size: 50257
+Creating model...
+Model parameters: 203,681,280
+Total training steps: 6,103
+Tokens per step: 16,384
+Starting training...
+Training:  45%|███▏   | 2765/6103 [08:35<10:05,  5.52it/s, loss=4.4803, lr=7.07e-03, L0=0.1098]Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/root/sparse_pretrain/src/train.py", line 475, in <module>
+  File "/root/sparse_pretrain/src/train.py", line 471, in main
+  File "/root/sparse_pretrain/src/train.py", line 306, in train
+    # Compute loss OUTSIDE autocast (full precision), matching authors' code
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/sparse_pretrain/src/sparsity.py", line 456, in normalize_grad_rms_
+    return 0.0
+
+KeyboardInterrupt

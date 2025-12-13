@@ -1,0 +1,42 @@
+{
+  "os":  "Linux-6.8.0-87-generic-x86_64-with-glibc2.39",
+  "python":  "CPython 3.12.3",
+  "startedAt":  "2025-12-13T04:33:41.935214Z",
+  "args":  [
+    "--config",
+    "configs/default.yaml"
+  ],
+  "program":  "-m src.train",
+  "git":  {
+    "remote":  "https://github.com/jacobcd52/sparse_pretrain.git",
+    "commit":  "611955a26ee6ba3a22537df398b79476f0e40203"
+  },
+  "email":  "jcdguitarguy@googlemail.com",
+  "root":  "/root/sparse_pretrain",
+  "host":  "157cc880a6ac",
+  "executable":  "/usr/local/bin/python",
+  "cpu_count":  112,
+  "cpu_count_logical":  224,
+  "gpu":  "NVIDIA B200",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "322122547200",
+      "used":  "3430744064"
+    }
+  },
+  "memory":  {
+    "total":  "1622818902016"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA B200",
+      "memoryTotal":  "192265846784",
+      "cudaCores":  18944,
+      "architecture":  "Blackwell",
+      "uuid":  "GPU-6af3c2ad-8c5d-5bb6-a737-cbc663367e33"
+    }
+  ],
+  "cudaVersion":  "12.8",
+  "writerId":  "v1t97eggd4u4s3yoa0uciir06bq4re1k"
+}

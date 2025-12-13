@@ -1,0 +1,26 @@
+2025-12-13 04:50:53,311 INFO    MainThread:250626 [wandb_setup.py:_flush():80] Current SDK version is 0.23.1
+2025-12-13 04:50:53,311 INFO    MainThread:250626 [wandb_setup.py:_flush():80] Configure stats pid to 250626
+2025-12-13 04:50:53,311 INFO    MainThread:250626 [wandb_setup.py:_flush():80] Loading settings from /root/.config/wandb/settings
+2025-12-13 04:50:53,311 INFO    MainThread:250626 [wandb_setup.py:_flush():80] Loading settings from /root/sparse_pretrain/wandb/settings
+2025-12-13 04:50:53,312 INFO    MainThread:250626 [wandb_setup.py:_flush():80] Loading settings from environment variables
+2025-12-13 04:50:53,312 INFO    MainThread:250626 [wandb_init.py:setup_run_log_directory():714] Logging user logs to /root/sparse_pretrain/wandb/run-20251213_045053-h8fai7sy/logs/debug.log
+2025-12-13 04:50:53,312 INFO    MainThread:250626 [wandb_init.py:setup_run_log_directory():715] Logging internal logs to /root/sparse_pretrain/wandb/run-20251213_045053-h8fai7sy/logs/debug-internal.log
+2025-12-13 04:50:53,312 INFO    MainThread:250626 [wandb_init.py:init():841] calling init triggers
+2025-12-13 04:50:53,312 INFO    MainThread:250626 [wandb_init.py:init():846] wandb.init called with sweep_config: {}
+config: {'model': {'n_layer': 8, 'd_model': 1024, 'n_ctx': 256, 'd_head': 16, 'd_mlp': 4096, 'vocab_size': None, 'use_rms_norm': True, 'tie_embeddings': False, 'use_positional_embeddings': False, 'use_bigram_table': True, 'use_attention_sinks': True, 'activation': 'gelu', 'dropout': 0.0, 'use_bias': True, 'use_flash_attention': True}, 'sparsity': {'enable_weight_sparsity': True, 'target_l0_fraction': 0.015625, 'sparsity_anneal_start_fraction': 0.01, 'sparsity_anneal_end_fraction': 0.5, 'min_weights_per_neuron': 4, 'enable_activation_sparsity': True, 'activation_topk_fraction': 0.25, 'activation_sparsity_locations': 'attn_in,attn_out,mlp_in,mlp_out,mlp_neuron,attn_v,attn_k,attn_q'}, 'optimizer': {'learning_rate': 0.0128, 'beta1': 0.9, 'beta2': 0.95, 'weight_decay': 0.1, 'eps': 0.1, 'enable_grad_clip': True, 'grad_clip_rms': 1.0, 'warmup_fraction': 0.01, 'enable_lr_decay': True, 'use_sharkfin_schedule': True}, 'training': {'dataset_name': 'roneneldan/TinyStories', 'dataset_split': 'train', 'text_column': 'text', 'tokenizer_name': 'roneneldan/TinyStories-33M', 'total_tokens': 100000000, 'batch_size': 64, 'gradient_accumulation_steps': 1, 'mixed_precision': 'bf16', 'checkpoint_dir': 'checkpoints', 'checkpoint_every_n_steps': 1000, 'keep_n_checkpoints': 5, 'log_every_n_steps': 1, 'log_gradients_every_n_steps': 10, 'log_weights_every_n_steps': 100, 'log_sparsity_every_n_steps': 50, 'eval_every_n_steps': 20, 'wandb_project': 'circuit_sparsity', 'wandb_run_name': None, 'wandb_entity': None, 'use_wandb': True, 'seed': 0, 'gradient_checkpointing': True}, '_wandb': {}}
+2025-12-13 04:50:53,312 INFO    MainThread:250626 [wandb_init.py:init():889] starting backend
+2025-12-13 04:50:53,569 INFO    MainThread:250626 [wandb_init.py:init():892] sending inform_init request
+2025-12-13 04:50:53,573 INFO    MainThread:250626 [wandb_init.py:init():900] backend started and connected
+2025-12-13 04:50:53,575 INFO    MainThread:250626 [wandb_init.py:init():970] updated telemetry
+2025-12-13 04:50:53,581 INFO    MainThread:250626 [wandb_init.py:init():994] communicating run to backend with 90.0 second timeout
+2025-12-13 04:50:53,939 INFO    MainThread:250626 [wandb_init.py:init():1041] starting run threads in backend
+2025-12-13 04:50:54,064 INFO    MainThread:250626 [wandb_run.py:_console_start():2521] atexit reg
+2025-12-13 04:50:54,064 INFO    MainThread:250626 [wandb_run.py:_redirect():2369] redirect: wrap_raw
+2025-12-13 04:50:54,064 INFO    MainThread:250626 [wandb_run.py:_redirect():2438] Wrapping output streams.
+2025-12-13 04:50:54,064 INFO    MainThread:250626 [wandb_run.py:_redirect():2461] Redirects installed.
+2025-12-13 04:50:54,067 INFO    MainThread:250626 [wandb_init.py:init():1081] run started, returning control to user process
+2025-12-13 05:19:54,989 INFO    MainThread:250626 [wandb_run.py:_finish():2287] finishing run training-saes/circuit_sparsity/h8fai7sy
+2025-12-13 05:19:54,990 INFO    MainThread:250626 [wandb_run.py:_atexit_cleanup():2486] got exitcode: 0
+2025-12-13 05:19:54,990 INFO    MainThread:250626 [wandb_run.py:_restore():2468] restore
+2025-12-13 05:19:54,990 INFO    MainThread:250626 [wandb_run.py:_restore():2474] restore done
+2025-12-13 05:19:55,869 INFO    MainThread:250626 [wandb_run.py:_footer_sync_info():3862] logging synced files

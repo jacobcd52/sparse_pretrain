@@ -1,0 +1,10 @@
+[34m[1mwandb[0m: [33mWARNING[0m Symlinked 1 file into the W&B run directory; call wandb.save again to sync new files.
+Loading dataset and tokenizer...
+Vocabulary size: 50257
+Creating model...
+Model parameters: 203,681,280
+Total training steps: 6,103
+Tokens per step: 16,384
+Starting training...
+Training: 100%|███████| 6103/6103 [18:31<00:00,  5.53it/s, loss=2.0385, lr=0.00e+00, L0=0.0156]
+Training complete!
