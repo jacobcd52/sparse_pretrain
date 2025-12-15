@@ -322,7 +322,14 @@ class SparseGPT(nn.Module):
         super().__init__()
         
         self.config = config
-        self.sparsity_config = sparsity_config or SparsityConfig()
+        # Default to sparsity DISABLED for safe inference when no config provided
+        # During training, always pass explicit sparsity_config
+        if sparsity_config is None:
+            sparsity_config = SparsityConfig(
+                enable_weight_sparsity=False,
+                enable_activation_sparsity=False,
+            )
+        self.sparsity_config = sparsity_config
         
         # Token embeddings
         self.wte = nn.Embedding(config.vocab_size, config.d_model)
@@ -509,6 +516,47 @@ class SparseGPT(nn.Module):
         if non_embedding and self.wpe is not None:
             n_params -= self.wpe.weight.numel()
         return n_params
+    
+    @classmethod
+    def from_pretrained(cls, repo_id: str, device: str = "cpu") -> "SparseGPT":
+        """
+        Load a pretrained model from HuggingFace Hub.
+        
+        This method loads both the config and weights together, ensuring
+        the sparsity settings match what was used during training.
+        
+        Args:
+            repo_id: HuggingFace repo ID (e.g., "username/model-name")
+            device: Device to load the model on ("cpu", "cuda", etc.)
+            
+        Returns:
+            Loaded SparseGPT model in eval mode
+        """
+        import json
+        from huggingface_hub import hf_hub_download
+        
+        # Download config and weights
+        config_path = hf_hub_download(repo_id=repo_id, filename="config.json")
+        model_path = hf_hub_download(repo_id=repo_id, filename="pytorch_model.bin")
+        
+        # Load config
+        with open(config_path, "r") as f:
+            config_dict = json.load(f)
+        
+        # Create configs from saved settings
+        model_config = ModelConfig(**config_dict["model_config"])
+        sparsity_config = SparsityConfig(**config_dict["sparsity_config"])
+        
+        # Create model with correct configs
+        model = cls(model_config, sparsity_config)
+        
+        # Load weights
+        state_dict = torch.load(model_path, map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
+        model.to(device)
+        model.eval()
+        
+        return model
     
     @torch.no_grad()
     def generate(
