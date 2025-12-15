@@ -259,6 +259,7 @@ def compute_activation_stats(logits: torch.Tensor, loss: torch.Tensor) -> dict:
 def evaluate_validation(
     model: nn.Module,
     val_batches: list,
+    accelerator: Accelerator,
     batch_size: int = 16,
     device: str = "cuda",
 ) -> dict:
@@ -268,6 +269,7 @@ def evaluate_validation(
     Args:
         model: The model to evaluate
         val_batches: List of token tensors (each of shape (seq_length,))
+        accelerator: Accelerator for mixed precision autocast
         batch_size: Batch size for evaluation
         device: Device to use
         
@@ -283,10 +285,11 @@ def evaluate_validation(
         batch_tensors = val_batches[i:i+batch_size]
         input_ids = torch.stack(batch_tensors).to(device)
         
-        # Forward pass
-        logits, _, _ = model(input_ids, labels=None)
+        # Forward pass with autocast (bf16 mixed precision)
+        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits, _, _ = model(input_ids, labels=None)
         
-        # Compute loss
+        # Compute loss outside autocast (full precision)
         shift_logits = logits[:, :-1, :].contiguous()
         shift_labels = input_ids[:, 1:].contiguous()
         
@@ -449,24 +452,46 @@ def train(config: Config):
     accelerator.print(f"Tokens per step: {tokens_per_step:,}")
     
     # Create optimizer
-    # Prefer fused AdamW when available (CUDA + torch supports it), but fall back if unsupported.
-    try:
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=config.optimizer.learning_rate,
-            betas=(config.optimizer.beta1, config.optimizer.beta2),
-            eps=config.optimizer.eps,
-            weight_decay=config.optimizer.weight_decay,
-            fused=True,
-        )
-    except TypeError:
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=config.optimizer.learning_rate,
-            betas=(config.optimizer.beta1, config.optimizer.beta2),
-            eps=config.optimizer.eps,
-            weight_decay=config.optimizer.weight_decay,
-        )
+    # circuit_sparsity uses raw Adam (not AdamW) with manual weight decay applied after sparsity
+    use_raw_adam = config.optimizer.optimizer_type == "adam"
+    
+    if use_raw_adam:
+        # Raw Adam like circuit_sparsity - weight decay applied manually after sparsity
+        try:
+            optimizer = torch.optim.Adam(
+                model.parameters(),
+                lr=config.optimizer.learning_rate,
+                betas=(config.optimizer.beta1, config.optimizer.beta2),
+                eps=config.optimizer.eps,
+                fused=True,
+            )
+        except TypeError:
+            optimizer = torch.optim.Adam(
+                model.parameters(),
+                lr=config.optimizer.learning_rate,
+                betas=(config.optimizer.beta1, config.optimizer.beta2),
+                eps=config.optimizer.eps,
+            )
+        accelerator.print(f"Using raw Adam optimizer (manual weight decay after sparsity)")
+    else:
+        # PyTorch AdamW - weight decay is decoupled and applied during optimizer step
+        try:
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=config.optimizer.learning_rate,
+                betas=(config.optimizer.beta1, config.optimizer.beta2),
+                eps=config.optimizer.eps,
+                weight_decay=config.optimizer.weight_decay,
+                fused=True,
+            )
+        except TypeError:
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=config.optimizer.learning_rate,
+                betas=(config.optimizer.beta1, config.optimizer.beta2),
+                eps=config.optimizer.eps,
+                weight_decay=config.optimizer.weight_decay,
+            )
     
     # Create weight sparsifier
     sparsifier = WeightSparsifier(
@@ -476,6 +501,7 @@ def train(config: Config):
         anneal_end_fraction=config.sparsity.sparsity_anneal_end_fraction,
         min_weights_per_neuron=config.sparsity.min_weights_per_neuron,
         total_steps=total_steps,
+        anneal_type=config.sparsity.anneal_type,
     ) if config.sparsity.enable_weight_sparsity else None
     
     # Create learning rate scheduler
@@ -527,8 +553,21 @@ def train(config: Config):
         
         # Forward/backward pass
         with accelerator.accumulate(model):
-            # Forward pass - don't compute loss inside (to match authors who compute loss outside autocast)
-            logits, _, _ = model(input_ids, labels=None)
+            # Determine autocast dtype based on config
+            if config.training.mixed_precision == "bf16":
+                autocast_dtype = torch.bfloat16
+            elif config.training.mixed_precision == "fp16":
+                autocast_dtype = torch.float16
+            else:
+                autocast_dtype = None  # No autocast
+            
+            # Forward pass with autocast (mixed precision)
+            if autocast_dtype is not None:
+                with torch.amp.autocast(device_type="cuda", dtype=autocast_dtype):
+                    logits, _, _ = model(input_ids, labels=None)
+            else:
+                # No autocast - full precision
+                logits, _, _ = model(input_ids, labels=None)
             
             # Compute loss OUTSIDE autocast (full precision), matching authors' code
             # shift by 1: logits[:-1] predicts labels[1:]
@@ -562,6 +601,17 @@ def train(config: Config):
             # Apply weight sparsity (after optimizer step)
             if sparsifier is not None:
                 sparsifier.step()
+            
+            # Manual weight decay for raw Adam (after sparsity, like circuit_sparsity)
+            # This ensures weight decay is applied to the sparsified weights, not before masking
+            if use_raw_adam and config.optimizer.weight_decay > 0:
+                current_lr = scheduler.get_lr()
+                unwrapped_model = accelerator.unwrap_model(model)
+                with torch.no_grad():
+                    for name, param in unwrapped_model.named_parameters():
+                        # Apply to weight matrices only, skip biases and bigram_table (like circuit_sparsity)
+                        if len(param.shape) > 1 and "bigram_table" not in name:
+                            param.data -= config.optimizer.weight_decay * current_lr * param.data
             
             # Update learning rate
             scheduler.step()
@@ -621,6 +671,7 @@ def train(config: Config):
                     val_stats = evaluate_validation(
                         model=accelerator.unwrap_model(model),
                         val_batches=val_batches[:config.training.val_max_batches],
+                        accelerator=accelerator,
                         batch_size=16,
                         device=accelerator.device,
                     )

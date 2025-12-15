@@ -447,6 +447,11 @@ class SparseGPT(nn.Module):
         # Token embeddings
         x = self.wte(input_ids)  # (B, T, d_model)
         
+        # Cast to autocast dtype if autocast is enabled
+        # This ensures residual connections stay in lower precision throughout the model
+        if torch.is_autocast_enabled('cuda'):
+            x = x.to(torch.get_autocast_dtype('cuda'))
+        
         # Add positional embeddings if enabled
         if self.wpe is not None:
             pos = torch.arange(0, T, dtype=torch.long, device=device)

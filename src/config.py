@@ -71,6 +71,7 @@ class SparsityConfig:
     # Always anneals from fully dense (1.0) to target over the specified range
     sparsity_anneal_start_fraction: float = 0.01  # When to START annealing (fraction of training)
     sparsity_anneal_end_fraction: float = 0.5  # When to END annealing (fraction of training)
+    anneal_type: Literal["linear", "exp"] = "linear"  # Annealing schedule type
     
     # Minimum nonzero weights per neuron (paper Section 2.3)
     min_weights_per_neuron: int = 4  # j parameter from paper
@@ -86,6 +87,9 @@ class SparsityConfig:
 @dataclass
 class OptimizerConfig:
     """Optimizer configuration."""
+    
+    # Optimizer type: "adamw" (PyTorch AdamW) or "adam" (raw Adam with manual weight decay like circuit_sparsity)
+    optimizer_type: Literal["adamw", "adam"] = "adamw"
     
     # AdamW parameters (paper Section 4.1)
     learning_rate: float = 1.28e-2  # From authors' reference code

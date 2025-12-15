@@ -45,6 +45,7 @@ class WeightSparsifier:
         anneal_end_fraction: float = 0.5,
         min_weights_per_neuron: int = 4,
         total_steps: int = 1000,
+        anneal_type: str = "linear",
     ):
         """
         Args:
@@ -54,10 +55,12 @@ class WeightSparsifier:
             anneal_end_fraction: When to END annealing (fraction of training)
             min_weights_per_neuron: Minimum nonzero weights per neuron (paper: j=4)
             total_steps: Total training steps
+            anneal_type: Type of annealing schedule ("linear" or "exp")
         """
         self.model = model
         self.target_l0_fraction = target_l0_fraction
         self.min_weights_per_neuron = min_weights_per_neuron
+        self.anneal_type = anneal_type
         
         self.state = SparsityState(
             current_l0_fraction=1.0,  # Always start fully dense
@@ -114,10 +117,17 @@ class WeightSparsifier:
         if step >= self.state.anneal_end_step:
             return self.target_l0_fraction
         
-        # During annealing - linear interpolation from 1.0 to target
+        # During annealing - interpolate from 1.0 to target
         anneal_duration = self.state.anneal_end_step - self.state.anneal_start_step
         progress = (step - self.state.anneal_start_step) / max(1, anneal_duration)
-        return 1.0 - progress * (1.0 - self.target_l0_fraction)
+        
+        if self.anneal_type == "exp":
+            # Exponential annealing: l0 = target^progress
+            # At progress=0: 1.0, at progress=1: target
+            return self.target_l0_fraction ** progress
+        else:
+            # Linear annealing (default)
+            return 1.0 - progress * (1.0 - self.target_l0_fraction)
     
     def get_sharkfin_lr_multiplier(self) -> float:
         """
