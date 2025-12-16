@@ -1,0 +1,74 @@
+dense_model:
+  repo_id: jacobcd52/ss_d256_f1
+  local_path: null
+sparse_model:
+  n_layer: 4
+  d_model: 4096
+  n_ctx: 512
+  d_head: 16
+  d_mlp: 16384
+  vocab_size: null
+  use_rms_norm: true
+  tie_embeddings: false
+  use_positional_embeddings: false
+  use_bigram_table: false
+  use_attention_sinks: true
+  activation: gelu
+  dropout: 0.0
+  use_bias: true
+  use_flash_attention: true
+bridges:
+  encoder_afrac: 0.25
+  coef_nmse: 1.0
+  coef_kl_d2s: 1.0
+  coef_kl_s2d: 1.0
+  coef_ce_sparse: 1.0
+  coef_kl_sparse: 1.0
+sparsity:
+  enable_weight_sparsity: true
+  target_l0_fraction: 0.0039
+  sparsity_anneal_start_fraction: 0.01
+  sparsity_anneal_end_fraction: 0.5
+  anneal_type: linear
+  min_weights_per_neuron: 4
+  enable_activation_sparsity: true
+  activation_topk_fraction: 0.25
+  activation_sparsity_locations: attn_in,attn_out,mlp_in,mlp_out,mlp_neuron,attn_v,attn_k,attn_q
+optimizer:
+  optimizer_type: adamw
+  learning_rate: 0.001
+  beta1: 0.9
+  beta2: 0.95
+  weight_decay: 0.1
+  eps: 0.1
+  enable_grad_clip: true
+  grad_clip_rms: 1.0
+  warmup_fraction: 0.01
+  enable_lr_decay: true
+  use_sharkfin_schedule: false
+training:
+  dataset_name: SimpleStories/SimpleStories
+  dataset_split: train
+  text_column: story
+  tokenizer_name: SimpleStories/SimpleStories-1.25M
+  total_tokens: 500000000
+  batch_size: 4
+  gradient_accumulation_steps: 1
+  mixed_precision: bf16
+  checkpoint_dir: checkpoints_bridges
+  checkpoint_every_n_steps: 5000
+  keep_n_checkpoints: 3
+  log_every_n_steps: 10
+  log_gradients_every_n_steps: 100
+  log_weights_every_n_steps: 100
+  log_sparsity_every_n_steps: 100
+  eval_every_n_steps: 100
+  val_split: test
+  val_holdout_fraction: 0.01
+  val_max_batches: 20
+  wandb_project: bridges_training
+  wandb_run_name: example_bridges
+  wandb_entity: null
+  use_wandb: true
+  seed: 0
+  hf_repo: null

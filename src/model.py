@@ -309,6 +309,79 @@ class TransformerBlock(nn.Module):
         x = x + mlp_out
         
         return x
+    
+    def forward_with_intermediate(
+        self,
+        x: torch.Tensor,
+        activation_sparsity_fn: Optional[callable] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass that also returns the intermediate state (after attention, before MLP).
+        
+        Used for bridges training to get activations at all bridge sites.
+        
+        Returns:
+            Tuple of (final_output, post_attention_state)
+        """
+        # Attention block
+        if activation_sparsity_fn is not None:
+            normed = self.ln_1(x)
+            normed = activation_sparsity_fn(normed, "attn_in")
+        else:
+            normed = self.ln_1(x)
+        
+        attn_out = self.attn(normed, activation_sparsity_fn)
+        
+        if activation_sparsity_fn is not None:
+            attn_out = activation_sparsity_fn(attn_out, "attn_out")
+        
+        post_attn = x + attn_out  # This is the bridge site after attention
+        
+        # MLP block
+        if activation_sparsity_fn is not None:
+            normed = self.ln_2(post_attn)
+            normed = activation_sparsity_fn(normed, "mlp_in")
+        else:
+            normed = self.ln_2(post_attn)
+        
+        mlp_out = self.mlp(normed, activation_sparsity_fn)
+        
+        if activation_sparsity_fn is not None:
+            mlp_out = activation_sparsity_fn(mlp_out, "mlp_out")
+        
+        post_mlp = post_attn + mlp_out
+        
+        return post_mlp, post_attn
+    
+    def forward_from_post_attn(
+        self,
+        post_attn: torch.Tensor,
+        activation_sparsity_fn: Optional[callable] = None,
+    ) -> torch.Tensor:
+        """
+        Run only the MLP part of the block, starting from the post-attention state.
+        
+        Used for hybrid forward passes in bridges training.
+        
+        Args:
+            post_attn: Activation after attention residual add (bridge site between attn and MLP)
+            
+        Returns:
+            Output after the full block
+        """
+        # MLP block only
+        if activation_sparsity_fn is not None:
+            normed = self.ln_2(post_attn)
+            normed = activation_sparsity_fn(normed, "mlp_in")
+        else:
+            normed = self.ln_2(post_attn)
+        
+        mlp_out = self.mlp(normed, activation_sparsity_fn)
+        
+        if activation_sparsity_fn is not None:
+            mlp_out = activation_sparsity_fn(mlp_out, "mlp_out")
+        
+        return post_attn + mlp_out
 
 
 class SparseGPT(nn.Module):
@@ -426,6 +499,196 @@ class SparseGPT(nn.Module):
             return self._activation_sparsity_cache[dim](x)
         
         return apply_activation_sparsity
+    
+    def forward_with_bridge_sites(
+        self,
+        input_ids: torch.Tensor,
+    ) -> Tuple[torch.Tensor, list]:
+        """
+        Forward pass that returns activations at all bridge sites.
+        
+        Bridge sites are placed before each attention and each MLP:
+        - Site 0: After embedding (before layer 0's attention)
+        - Site 2i+1: After layer i's attention (before layer i's MLP)
+        - Site 2i+2: After layer i's MLP (before layer i+1's attention)
+        
+        For L layers, there are 2L + 1 bridge sites.
+        
+        Args:
+            input_ids: Token IDs of shape (batch_size, seq_len)
+            
+        Returns:
+            logits: Logits of shape (batch_size, seq_len, vocab_size)
+            bridge_sites: List of activations at each bridge site
+        """
+        B, T = input_ids.shape
+        device = input_ids.device
+        
+        assert T <= self.config.n_ctx, f"Sequence length {T} exceeds context length {self.config.n_ctx}"
+        
+        # Token embeddings
+        x = self.wte(input_ids)
+        
+        # Cast to autocast dtype if autocast is enabled
+        if torch.is_autocast_enabled('cuda'):
+            x = x.to(torch.get_autocast_dtype('cuda'))
+        
+        # Add positional embeddings if enabled
+        if self.wpe is not None:
+            pos = torch.arange(0, T, dtype=torch.long, device=device)
+            x = x + self.wpe(pos)
+        
+        x = self.drop(x)
+        
+        # Get activation sparsity function
+        act_sparsity_fn = self._get_activation_sparsity_fn()
+        
+        # Collect activations at bridge sites
+        bridge_sites = []
+        
+        # Site 0: after embedding (before layer 0's attention)
+        bridge_sites.append(x.clone())
+        
+        # Process each transformer block, collecting mid-block activations
+        for block in self.blocks:
+            # --- Attention sublayer ---
+            if act_sparsity_fn is not None:
+                normed = block.ln_1(x)
+                normed = act_sparsity_fn(normed, "attn_in")
+            else:
+                normed = block.ln_1(x)
+            
+            attn_out = block.attn(normed, act_sparsity_fn)
+            
+            if act_sparsity_fn is not None:
+                attn_out = act_sparsity_fn(attn_out, "attn_out")
+            
+            x = x + attn_out
+            
+            # Bridge site: after attention, before MLP
+            bridge_sites.append(x.clone())
+            
+            # --- MLP sublayer ---
+            if act_sparsity_fn is not None:
+                normed = block.ln_2(x)
+                normed = act_sparsity_fn(normed, "mlp_in")
+            else:
+                normed = block.ln_2(x)
+            
+            mlp_out = block.mlp(normed, act_sparsity_fn)
+            
+            if act_sparsity_fn is not None:
+                mlp_out = act_sparsity_fn(mlp_out, "mlp_out")
+            
+            x = x + mlp_out
+            
+            # Bridge site: after MLP
+            bridge_sites.append(x.clone())
+        
+        # Final layer norm
+        x = self.ln_f(x)
+        
+        # LM head
+        logits = self.lm_head(x)
+        
+        # Add bigram logits if enabled
+        if self.bigram_table is not None:
+            bigram_logits = F.embedding(input_ids, self.bigram_table)
+            logits = logits + bigram_logits
+        
+        return logits, bridge_sites
+    
+    def forward_from_site(
+        self,
+        h: torch.Tensor,
+        site_idx: int,
+        input_ids: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Forward pass starting from a specific bridge site.
+        
+        This is used for hybrid passes in bridge training.
+        
+        Args:
+            h: Activations at the starting site, shape (batch_size, seq_len, d_model)
+            site_idx: Bridge site index to start from (0 to 2*n_layer)
+            input_ids: Original input IDs (needed for bigram table if used)
+            
+        Returns:
+            logits: Output logits
+        """
+        x = h
+        
+        # Get activation sparsity function
+        act_sparsity_fn = self._get_activation_sparsity_fn()
+        
+        # Determine which block and position within block to start from
+        # Site 0: before layer 0's attention
+        # Site 2i+1: after layer i's attention (before MLP)
+        # Site 2i+2: after layer i's MLP
+        
+        n_layers = len(self.blocks)
+        
+        for layer_idx in range(n_layers):
+            block = self.blocks[layer_idx]
+            
+            # Site indices for this layer:
+            # - Before attention: 2*layer_idx (for layer_idx=0 this is site 0)
+            # - After attention (before MLP): 2*layer_idx + 1
+            # - After MLP: 2*layer_idx + 2
+            
+            site_before_attn = 2 * layer_idx
+            site_after_attn = 2 * layer_idx + 1
+            site_after_mlp = 2 * layer_idx + 2
+            
+            # Skip layers/sublayers we've already passed
+            if site_idx > site_after_mlp:
+                continue
+            
+            # Process attention if we haven't passed it
+            if site_idx <= site_before_attn:
+                # Do full attention sublayer
+                if act_sparsity_fn is not None:
+                    normed = block.ln_1(x)
+                    normed = act_sparsity_fn(normed, "attn_in")
+                else:
+                    normed = block.ln_1(x)
+                
+                attn_out = block.attn(normed, act_sparsity_fn)
+                
+                if act_sparsity_fn is not None:
+                    attn_out = act_sparsity_fn(attn_out, "attn_out")
+                
+                x = x + attn_out
+            
+            # Process MLP if we haven't passed it
+            if site_idx <= site_after_attn:
+                # Do full MLP sublayer
+                if act_sparsity_fn is not None:
+                    normed = block.ln_2(x)
+                    normed = act_sparsity_fn(normed, "mlp_in")
+                else:
+                    normed = block.ln_2(x)
+                
+                mlp_out = block.mlp(normed, act_sparsity_fn)
+                
+                if act_sparsity_fn is not None:
+                    mlp_out = act_sparsity_fn(mlp_out, "mlp_out")
+                
+                x = x + mlp_out
+        
+        # Final layer norm
+        x = self.ln_f(x)
+        
+        # LM head
+        logits = self.lm_head(x)
+        
+        # Add bigram logits if enabled
+        if self.bigram_table is not None and input_ids is not None:
+            bigram_logits = F.embedding(input_ids, self.bigram_table)
+            logits = logits + bigram_logits
+        
+        return logits
     
     def forward(
         self,
