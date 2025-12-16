@@ -31,6 +31,7 @@ from .config_bridges import FullBridgesConfig
 from .model import SparseGPT, create_model
 from .bridges import (
     BridgeSet,
+    KLTargetCache,
     compute_bridge_nmse_loss,
     compute_hybrid_kl_losses,
     kl_divergence,
@@ -559,21 +560,27 @@ def train_bridges(config: FullBridgesConfig):
             shift_logits_dense = y_dense[:, :-1, :].contiguous()
             shift_labels = labels[:, 1:].contiguous()
             
+            # Pre-compute KL target cache for efficiency
+            # This avoids recomputing top-k indices and target softmax for each KL call
+            kl_target_cache = KLTargetCache(shift_logits_dense, temperature=1.0, topk=64)
+            
             # 1. Cross-entropy on sparse model (standard LM loss)
             loss_ce_sparse = F.cross_entropy(
                 shift_logits_sparse.view(-1, shift_logits_sparse.size(-1)),
                 shift_labels.view(-1),
             )
             
-            # 2. KL distillation from dense to sparse
-            loss_kl_sparse = kl_divergence(shift_logits_dense, shift_logits_sparse)
+            # 2. KL distillation from dense to sparse (use cache)
+            loss_kl_sparse = kl_divergence(
+                shift_logits_dense, shift_logits_sparse, target_cache=kl_target_cache
+            )
             
             # 3. NMSE reconstruction loss
             loss_nmse = compute_bridge_nmse_loss(
                 h_dense_list, h_sparse_list, bridge_set
             )
             
-            # 4 & 5. Hybrid KL losses
+            # 4 & 5. Hybrid KL losses (use cache)
             hybrid_result = compute_hybrid_kl_losses(
                 dense_model=dense_model,
                 sparse_model=sparse_model,
@@ -582,6 +589,7 @@ def train_bridges(config: FullBridgesConfig):
                 h_sparse_list=h_sparse_list,
                 y_dense=y_dense,
                 input_ids=input_ids,
+                kl_target_cache=kl_target_cache,
             )
             loss_kl_d2s = hybrid_result.kl_d2s
             loss_kl_s2d = hybrid_result.kl_s2d

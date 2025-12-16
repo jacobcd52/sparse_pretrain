@@ -544,10 +544,12 @@ class SparseGPT(nn.Module):
         act_sparsity_fn = self._get_activation_sparsity_fn()
         
         # Collect activations at bridge sites
+        # Note: No clone needed because x = x + ... creates new tensors,
+        # so each stored tensor remains valid and part of the computation graph.
         bridge_sites = []
         
         # Site 0: after embedding (before layer 0's attention)
-        bridge_sites.append(x.clone())
+        bridge_sites.append(x)
         
         # Process each transformer block, collecting mid-block activations
         for block in self.blocks:
@@ -563,10 +565,10 @@ class SparseGPT(nn.Module):
             if act_sparsity_fn is not None:
                 attn_out = act_sparsity_fn(attn_out, "attn_out")
             
-            x = x + attn_out
+            x = x + attn_out  # Creates new tensor, old x stays valid
             
             # Bridge site: after attention, before MLP
-            bridge_sites.append(x.clone())
+            bridge_sites.append(x)
             
             # --- MLP sublayer ---
             if act_sparsity_fn is not None:
@@ -580,10 +582,10 @@ class SparseGPT(nn.Module):
             if act_sparsity_fn is not None:
                 mlp_out = act_sparsity_fn(mlp_out, "mlp_out")
             
-            x = x + mlp_out
+            x = x + mlp_out  # Creates new tensor, old x stays valid
             
             # Bridge site: after MLP
-            bridge_sites.append(x.clone())
+            bridge_sites.append(x)
         
         # Final layer norm
         x = self.ln_f(x)

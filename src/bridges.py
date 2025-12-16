@@ -61,8 +61,9 @@ class GradientBuffer:
         class _BufferedGradAccum(torch.autograd.Function):
             @staticmethod
             def forward(ctx, x):
-                ctx.save_for_backward(x)
-                return x.clone()
+                # No need to save_for_backward since we don't use it
+                # No need to clone - we're not modifying x, just passing it through
+                return x
             
             @staticmethod
             def backward(ctx, grad):
@@ -76,11 +77,15 @@ class GradientBuffer:
         self.accumulator = _BufferedGradAccum.apply(x)
         self._AccumClass = _BufferedGradAccum
     
-    def release_gradients(self):
+    def release_gradients(self, retain_graph: bool = True):
         """
         Release accumulated gradients back through the original tensor.
         
         Call this after backward() on the loss that uses the accumulator.
+        
+        Args:
+            retain_graph: Whether to keep the computation graph after backward.
+                Use False for the last release to free memory.
         """
         if self._released:
             return
@@ -92,7 +97,12 @@ class GradientBuffer:
         # Continue backprop through the computation graph of original
         # This propagates gradients to all tensors that original depends on
         if self.original.grad_fn is not None:
-            self.original.backward(self.grad_buf, retain_graph=True)
+            self.original.backward(self.grad_buf, retain_graph=retain_graph)
+        
+        # Clear references to free memory
+        self.grad_buf = None
+        self.original = None
+        self.accumulator = None
 
 
 class BridgeEncoder(nn.Module):
@@ -323,11 +333,63 @@ def compute_bridge_nmse_loss(
     return total_loss
 
 
+class KLTargetCache:
+    """
+    Pre-computed values for efficient KL divergence computation.
+    
+    When computing multiple KL divergences against the same target distribution
+    (e.g., y_dense for all hybrid passes), we can pre-compute the top-k indices
+    and target softmax once, then reuse them for all source distributions.
+    
+    This saves ~4L+2 top-k operations per step for an L-layer model.
+    """
+    
+    def __init__(
+        self,
+        logits_target: torch.Tensor,
+        temperature: float = 1.0,
+        topk: Optional[int] = 64,
+    ):
+        """
+        Pre-compute target distribution values.
+        
+        Args:
+            logits_target: Target logits, shape (batch, seq, vocab)
+            temperature: Temperature for softmax
+            topk: Number of top tokens to use (None for full vocab)
+        """
+        self.temperature = temperature
+        self.topk = topk
+        
+        # Apply temperature scaling
+        logits_scaled = logits_target / temperature
+        
+        # Flatten to (batch * seq, vocab) for easier processing
+        self.orig_shape = logits_scaled.shape
+        if logits_scaled.dim() == 3:
+            logits_scaled = logits_scaled.reshape(-1, self.orig_shape[-1])
+        
+        if topk is not None and topk < logits_scaled.shape[-1]:
+            # Pre-compute top-k indices (no gradient needed for indices)
+            _, self.topk_indices = torch.topk(logits_scaled, topk, dim=-1)  # (N, k)
+            
+            # Pre-compute target softmax over top-k
+            logits_target_topk = torch.gather(logits_scaled, dim=-1, index=self.topk_indices)
+            self.p_target = F.softmax(logits_target_topk, dim=-1)  # (N, k)
+            self.use_topk = True
+        else:
+            # Full vocabulary - pre-compute full softmax
+            self.p_target = F.softmax(logits_scaled, dim=-1)
+            self.topk_indices = None
+            self.use_topk = False
+
+
 def kl_divergence(
     logits_target: torch.Tensor,
     logits_source: torch.Tensor,
     temperature: float = 1.0,
     topk: Optional[int] = 64,
+    target_cache: Optional[KLTargetCache] = None,
 ) -> torch.Tensor:
     """
     Compute KL divergence KL(target || source) with optional top-k approximation.
@@ -342,15 +404,41 @@ def kl_divergence(
     Args:
         logits_target: Logits from the target distribution (e.g., dense model)
             Shape: (batch, seq, vocab) or (batch * seq, vocab)
+            Can be None if target_cache is provided.
         logits_source: Logits from the source distribution (e.g., hybrid pass)
             Shape: same as logits_target
         temperature: Temperature for softmax (default 1.0)
         topk: If specified, only compute KL over top-k tokens from target.
             Set to None for exact KL (slower). Default 64.
+        target_cache: Pre-computed target values for efficiency. If provided,
+            logits_target is ignored and the cached values are used.
         
     Returns:
         KL divergence (scalar)
     """
+    if target_cache is not None:
+        # Use pre-computed target values
+        temperature = target_cache.temperature
+        
+        # Apply temperature scaling to source
+        logits_source = logits_source / temperature
+        
+        # Flatten source to match cache shape
+        if logits_source.dim() == 3:
+            logits_source = logits_source.reshape(-1, logits_source.shape[-1])
+        
+        if target_cache.use_topk:
+            # Gather source logits at pre-computed top-k indices
+            logits_source_topk = torch.gather(logits_source, dim=-1, index=target_cache.topk_indices)
+            log_p_source = F.log_softmax(logits_source_topk, dim=-1)
+            kl = F.kl_div(log_p_source, target_cache.p_target, reduction='batchmean')
+        else:
+            log_p_source = F.log_softmax(logits_source, dim=-1)
+            kl = F.kl_div(log_p_source, target_cache.p_target, reduction='batchmean')
+        
+        return kl * (temperature ** 2)
+    
+    # Original implementation when no cache provided
     # Apply temperature scaling
     logits_target = logits_target / temperature
     logits_source = logits_source / temperature
@@ -408,12 +496,24 @@ class HybridKLResult:
         self._released = False
     
     def release_gradients(self):
-        """Release accumulated gradients from all buffers."""
+        """Release accumulated gradients from all buffers.
+        
+        Uses retain_graph=True for all but the last buffer to allow
+        shared computation graphs, then retain_graph=False for the
+        last buffer to free memory.
+        """
         if self._released:
             return
         self._released = True
-        for buffer in self.gradient_buffers:
-            buffer.release_gradients()
+        
+        n_buffers = len(self.gradient_buffers)
+        for i, buffer in enumerate(self.gradient_buffers):
+            # Only keep graph for all but the last buffer
+            retain = (i < n_buffers - 1)
+            buffer.release_gradients(retain_graph=retain)
+        
+        # Clear buffer list to free references
+        self.gradient_buffers = []
     
     @property
     def total(self) -> torch.Tensor:
@@ -429,6 +529,7 @@ def compute_hybrid_kl_losses(
     h_sparse_list: List[torch.Tensor],
     y_dense: torch.Tensor,
     input_ids: torch.Tensor,
+    kl_target_cache: Optional[KLTargetCache] = None,
 ) -> "HybridKLResult":
     """
     Compute KL losses for hybrid forward passes.
@@ -447,6 +548,8 @@ def compute_hybrid_kl_losses(
         h_sparse_list: Sparse activations at each bridge site
         y_dense: Dense model logits (target)
         input_ids: Input token IDs (for bigram table)
+        kl_target_cache: Optional pre-computed KL target values for efficiency.
+            If provided, reuses cached top-k indices and target softmax.
         
     Returns:
         HybridKLResult containing kl_d2s, kl_s2d losses and gradient buffers.
@@ -455,7 +558,8 @@ def compute_hybrid_kl_losses(
     """
     kl_d2s, kl_s2d, buffers = _compute_hybrid_kl_losses_buffered(
         dense_model, sparse_model, bridge_set,
-        h_dense_list, h_sparse_list, y_dense, input_ids
+        h_dense_list, h_sparse_list, y_dense, input_ids,
+        kl_target_cache
     )
     return HybridKLResult(kl_d2s, kl_s2d, buffers)
 
@@ -468,6 +572,7 @@ def _compute_hybrid_kl_losses_buffered(
     h_sparse_list: List[torch.Tensor],
     y_dense: torch.Tensor,
     input_ids: torch.Tensor,
+    kl_target_cache: Optional[KLTargetCache] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, List["GradientBuffer"]]:
     """
     Optimized implementation using gradient buffering.
@@ -502,7 +607,10 @@ def _compute_hybrid_kl_losses_buffered(
         y_hybrid = sparse_model.forward_from_site(buffer.accumulator, i, input_ids)
         
         # KL(dense || hybrid) - gradients will accumulate in buffer
-        kl_d2s_total = kl_d2s_total + kl_divergence(y_dense, y_hybrid)
+        # Use cache if provided for efficiency
+        kl_d2s_total = kl_d2s_total + kl_divergence(
+            y_dense, y_hybrid, target_cache=kl_target_cache
+        )
     
     # =========================================================================
     # KL for sparse→dense hybrid passes (s2d)
@@ -521,7 +629,10 @@ def _compute_hybrid_kl_losses_buffered(
         y_hybrid = dense_model.forward_from_site(buffer.accumulator, i, input_ids)
         
         # KL(dense || hybrid) - gradients will accumulate in buffer
-        kl_s2d_total = kl_s2d_total + kl_divergence(y_dense, y_hybrid)
+        # Use cache if provided for efficiency
+        kl_s2d_total = kl_s2d_total + kl_divergence(
+            y_dense, y_hybrid, target_cache=kl_target_cache
+        )
     
     return kl_d2s_total, kl_s2d_total, gradient_buffers
 

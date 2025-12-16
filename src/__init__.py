@@ -11,7 +11,7 @@ from .config_bridges import FullBridgesConfig, BridgesConfig, DenseModelConfig
 from .bridges import (
     BridgeSet, BridgeEncoder, BridgeDecoder,
     nmse_loss, kl_divergence, compute_hybrid_kl_losses,
-    GradientBuffer, HybridKLResult,
+    GradientBuffer, HybridKLResult, KLTargetCache,
 )
 
 __all__ = [
@@ -43,4 +43,5 @@ __all__ = [
     "compute_hybrid_kl_losses",
     "GradientBuffer",
     "HybridKLResult",
+    "KLTargetCache",
 ]

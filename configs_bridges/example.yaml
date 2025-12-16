@@ -67,7 +67,7 @@ sparsity:
   # Sparsity annealing schedule
   sparsity_anneal_start_fraction: 0.01
   sparsity_anneal_end_fraction: 0.5
-  anneal_type: linear
+  anneal_type: exponential
   
   # Minimum nonzero weights per neuron
   min_weights_per_neuron: 4
@@ -109,8 +109,8 @@ training:
   
   # Training
   total_tokens: 500000000   # 500M tokens
-  batch_size: 4
-  gradient_accumulation_steps: 1
+  batch_size: 16
+  gradient_accumulation_steps: 8
   
   # Mixed precision
   mixed_precision: bf16
@@ -142,5 +142,5 @@ training:
   seed: 0
   
   # HuggingFace Hub (optional)
-  hf_repo: null
+  hf_repo: jacobcd52/ss_bridge16
 
