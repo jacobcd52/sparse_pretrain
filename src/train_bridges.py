@@ -31,6 +31,7 @@ from .config_bridges import FullBridgesConfig
 from .model import SparseGPT, create_model
 from .bridges import (
     BridgeSet,
+    BridgeNMSEResult,
     KLTargetCache,
     compute_bridge_nmse_loss,
     compute_hybrid_kl_losses,
@@ -500,6 +501,12 @@ def train_bridges(config: FullBridgesConfig):
         "kl_d2s": 0.0,
         "kl_s2d": 0.0,
     }
+    # Per-site running loss trackers for granular logging
+    n_bridge_sites = 2 * n_layers_sparse + 1
+    running_kl_per_site = {f"d2s_site{i}": 0.0 for i in range(n_bridge_sites)}
+    running_kl_per_site.update({f"s2d_site{i}": 0.0 for i in range(n_bridge_sites)})
+    running_mse_per_site = {f"encoder_site{i}": 0.0 for i in range(n_bridge_sites)}
+    running_mse_per_site.update({f"decoder_site{i}": 0.0 for i in range(n_bridge_sites)})
     start_time = time.time()
     
     progress_bar = tqdm(
@@ -576,9 +583,10 @@ def train_bridges(config: FullBridgesConfig):
             )
             
             # 3. NMSE reconstruction loss
-            loss_nmse = compute_bridge_nmse_loss(
+            nmse_result = compute_bridge_nmse_loss(
                 h_dense_list, h_sparse_list, bridge_set
             )
+            loss_nmse = nmse_result.total
             
             # 4 & 5. Hybrid KL losses (use cache)
             hybrid_result = compute_hybrid_kl_losses(
@@ -609,6 +617,12 @@ def train_bridges(config: FullBridgesConfig):
             running_loss_components["nmse"] += loss_nmse.detach().item() / grad_accum_steps
             running_loss_components["kl_d2s"] += loss_kl_d2s.detach().item() / grad_accum_steps
             running_loss_components["kl_s2d"] += loss_kl_s2d.detach().item() / grad_accum_steps
+            
+            # Track per-site losses for granular logging
+            for key, val in hybrid_result.get_detailed_losses().items():
+                running_kl_per_site[key] += val / grad_accum_steps
+            for key, val in nmse_result.get_detailed_losses().items():
+                running_mse_per_site[key] += val / grad_accum_steps
             
             # Backward pass
             # Use retain_graph=True to allow gradient buffer release after
@@ -673,9 +687,21 @@ def train_bridges(config: FullBridgesConfig):
                     "train/grad_rms": grad_rms,
                 }
                 
+                # Add per-site KL losses for granular logging (under KL/ section)
+                for key, val in running_kl_per_site.items():
+                    log_dict[f"KL/{key}"] = val / config.training.log_every_n_steps
+                
+                # Add per-site MSE losses for granular logging (under MSE/ section)
+                for key, val in running_mse_per_site.items():
+                    log_dict[f"MSE/{key}"] = val / config.training.log_every_n_steps
+                
                 # Reset loss components
                 for key in running_loss_components:
                     running_loss_components[key] = 0.0
+                for key in running_kl_per_site:
+                    running_kl_per_site[key] = 0.0
+                for key in running_mse_per_site:
+                    running_mse_per_site[key] = 0.0
                 
                 # Sparsity stats
                 if sparsifier is not None and step % config.training.log_sparsity_every_n_steps == 0:
