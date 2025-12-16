@@ -295,11 +295,36 @@ def nmse_loss(
     return mse / (var.detach() + eps)
 
 
+class BridgeNMSEResult:
+    """
+    Result container for bridge NMSE loss computation with per-site breakdown.
+    """
+    
+    def __init__(
+        self,
+        total: torch.Tensor,
+        encoder_losses: List[torch.Tensor],
+        decoder_losses: List[torch.Tensor],
+    ):
+        self.total = total
+        self.encoder_losses = encoder_losses  # Per-site encoder NMSE
+        self.decoder_losses = decoder_losses  # Per-site decoder NMSE
+    
+    def get_detailed_losses(self) -> dict:
+        """Return a dict of per-site losses for logging."""
+        result = {}
+        for i, loss in enumerate(self.encoder_losses):
+            result[f"encoder_site{i}"] = loss.detach().item()
+        for i, loss in enumerate(self.decoder_losses):
+            result[f"decoder_site{i}"] = loss.detach().item()
+        return result
+
+
 def compute_bridge_nmse_loss(
     h_dense_list: List[torch.Tensor],
     h_sparse_list: List[torch.Tensor],
     bridge_set: BridgeSet,
-) -> torch.Tensor:
+) -> BridgeNMSEResult:
     """
     Compute the total NMSE loss for all bridge sites.
     
@@ -311,10 +336,12 @@ def compute_bridge_nmse_loss(
         bridge_set: The bridge modules
         
     Returns:
-        Total NMSE loss (scalar)
+        BridgeNMSEResult with total loss and per-site breakdown
     """
     total_loss = 0.0
     n_sites = len(h_dense_list)
+    encoder_losses = []
+    decoder_losses = []
     
     for i in range(n_sites):
         h_d = h_dense_list[i]
@@ -323,14 +350,16 @@ def compute_bridge_nmse_loss(
         # Encoder loss: predict sparse from dense
         h_s_pred = bridge_set.encode(i, h_d)
         encoder_loss = nmse_loss(h_s_pred, h_s)
+        encoder_losses.append(encoder_loss)
         
         # Decoder loss: predict dense from sparse
         h_d_pred = bridge_set.decode(i, h_s)
         decoder_loss = nmse_loss(h_d_pred, h_d)
+        decoder_losses.append(decoder_loss)
         
         total_loss = total_loss + encoder_loss + decoder_loss
     
-    return total_loss
+    return BridgeNMSEResult(total_loss, encoder_losses, decoder_losses)
 
 
 class KLTargetCache:
@@ -488,10 +517,14 @@ class HybridKLResult:
         self,
         kl_d2s: torch.Tensor,
         kl_s2d: torch.Tensor,
+        kl_d2s_per_site: Optional[List[torch.Tensor]] = None,
+        kl_s2d_per_site: Optional[List[torch.Tensor]] = None,
         gradient_buffers: Optional[List[GradientBuffer]] = None,
     ):
         self.kl_d2s = kl_d2s
         self.kl_s2d = kl_s2d
+        self.kl_d2s_per_site = kl_d2s_per_site or []
+        self.kl_s2d_per_site = kl_s2d_per_site or []
         self.gradient_buffers = gradient_buffers or []
         self._released = False
     
@@ -519,6 +552,15 @@ class HybridKLResult:
     def total(self) -> torch.Tensor:
         """Sum of d2s and s2d losses."""
         return self.kl_d2s + self.kl_s2d
+    
+    def get_detailed_losses(self) -> dict:
+        """Return a dict of per-site KL losses for logging."""
+        result = {}
+        for i, loss in enumerate(self.kl_d2s_per_site):
+            result[f"d2s_site{i}"] = loss.detach().item()
+        for i, loss in enumerate(self.kl_s2d_per_site):
+            result[f"s2d_site{i}"] = loss.detach().item()
+        return result
 
 
 def compute_hybrid_kl_losses(
@@ -552,16 +594,16 @@ def compute_hybrid_kl_losses(
             If provided, reuses cached top-k indices and target softmax.
         
     Returns:
-        HybridKLResult containing kl_d2s, kl_s2d losses and gradient buffers.
+        HybridKLResult containing kl_d2s, kl_s2d losses, per-site losses, and gradient buffers.
         IMPORTANT: Call result.release_gradients() after backward() to propagate
         gradients through the bridges.
     """
-    kl_d2s, kl_s2d, buffers = _compute_hybrid_kl_losses_buffered(
+    kl_d2s, kl_s2d, kl_d2s_per_site, kl_s2d_per_site, buffers = _compute_hybrid_kl_losses_buffered(
         dense_model, sparse_model, bridge_set,
         h_dense_list, h_sparse_list, y_dense, input_ids,
         kl_target_cache
     )
-    return HybridKLResult(kl_d2s, kl_s2d, buffers)
+    return HybridKLResult(kl_d2s, kl_s2d, kl_d2s_per_site, kl_s2d_per_site, buffers)
 
 
 def _compute_hybrid_kl_losses_buffered(
@@ -573,7 +615,7 @@ def _compute_hybrid_kl_losses_buffered(
     y_dense: torch.Tensor,
     input_ids: torch.Tensor,
     kl_target_cache: Optional[KLTargetCache] = None,
-) -> Tuple[torch.Tensor, torch.Tensor, List["GradientBuffer"]]:
+) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor], List[torch.Tensor], List["GradientBuffer"]]:
     """
     Optimized implementation using gradient buffering.
     
@@ -585,7 +627,7 @@ def _compute_hybrid_kl_losses_buffered(
     `compute_hybrid_kl_losses` which handles this automatically.
     
     Returns:
-        Tuple of (kl_d2s, kl_s2d, gradient_buffers)
+        Tuple of (kl_d2s, kl_s2d, kl_d2s_per_site, kl_s2d_per_site, gradient_buffers)
     """
     n_sites = len(h_dense_list)
     gradient_buffers = []
@@ -594,6 +636,7 @@ def _compute_hybrid_kl_losses_buffered(
     # KL for dense→sparse hybrid passes (d2s)
     # =========================================================================
     kl_d2s_total = torch.tensor(0.0, device=y_dense.device, dtype=y_dense.dtype)
+    kl_d2s_per_site = []
     
     for i in range(n_sites):
         # Encode dense activation to sparse space
@@ -608,14 +651,15 @@ def _compute_hybrid_kl_losses_buffered(
         
         # KL(dense || hybrid) - gradients will accumulate in buffer
         # Use cache if provided for efficiency
-        kl_d2s_total = kl_d2s_total + kl_divergence(
-            y_dense, y_hybrid, target_cache=kl_target_cache
-        )
+        kl_site = kl_divergence(y_dense, y_hybrid, target_cache=kl_target_cache)
+        kl_d2s_per_site.append(kl_site)
+        kl_d2s_total = kl_d2s_total + kl_site
     
     # =========================================================================
     # KL for sparse→dense hybrid passes (s2d)
     # =========================================================================
     kl_s2d_total = torch.tensor(0.0, device=y_dense.device, dtype=y_dense.dtype)
+    kl_s2d_per_site = []
     
     for i in range(n_sites):
         # Decode sparse activation to dense space
@@ -630,11 +674,11 @@ def _compute_hybrid_kl_losses_buffered(
         
         # KL(dense || hybrid) - gradients will accumulate in buffer
         # Use cache if provided for efficiency
-        kl_s2d_total = kl_s2d_total + kl_divergence(
-            y_dense, y_hybrid, target_cache=kl_target_cache
-        )
+        kl_site = kl_divergence(y_dense, y_hybrid, target_cache=kl_target_cache)
+        kl_s2d_per_site.append(kl_site)
+        kl_s2d_total = kl_s2d_total + kl_site
     
-    return kl_d2s_total, kl_s2d_total, gradient_buffers
+    return kl_d2s_total, kl_s2d_total, kl_d2s_per_site, kl_s2d_per_site, gradient_buffers
 
 
 def verify_model_is_dense(model: nn.Module, model_name: str = "model") -> None:
