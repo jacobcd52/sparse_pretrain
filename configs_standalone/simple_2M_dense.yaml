@@ -55,11 +55,11 @@ sparsity:
 
 optimizer:
   # AdamW parameters (paper Section 4.1)
-  learning_rate: 0.001
+  learning_rate: 0.01
   beta1: 0.9
   beta2: 0.95
   weight_decay: 0.1
-  eps: 0.1  # NOTE: Unusually large epsilon! (paper explicitly mentions this)
+  eps: 0.000001  # NOTE: Unusually large epsilon! (paper explicitly mentions this)
   
   # Gradient clipping (paper Section 4.2) - ESSENTIAL for stability
   enable_grad_clip: true
