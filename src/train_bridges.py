@@ -588,7 +588,10 @@ def train_bridges(config: FullBridgesConfig):
             )
             loss_nmse = nmse_result.total
             
-            # 4 & 5. Hybrid KL losses (use cache)
+            # 4 & 5. Hybrid KL losses
+            # NOTE: Cannot use kl_target_cache here because it was computed on
+            # shifted logits (batch, seq-1, vocab) but hybrid outputs have shape
+            # (batch, seq, vocab). Using the cache would cause shape misalignment.
             hybrid_result = compute_hybrid_kl_losses(
                 dense_model=dense_model,
                 sparse_model=sparse_model,
@@ -597,7 +600,7 @@ def train_bridges(config: FullBridgesConfig):
                 h_sparse_list=h_sparse_list,
                 y_dense=y_dense,
                 input_ids=input_ids,
-                kl_target_cache=kl_target_cache,
+                kl_target_cache=None,  # Don't use cache due to shape mismatch
             )
             loss_kl_d2s = hybrid_result.kl_d2s
             loss_kl_s2d = hybrid_result.kl_s2d

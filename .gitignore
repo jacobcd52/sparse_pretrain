@@ -2,5 +2,6 @@
 *.safetensors
 
 checkpoints/
+checkpoints_bridges/
 wandb/
 nohup.out

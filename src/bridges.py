@@ -348,8 +348,11 @@ def compute_bridge_nmse_loss(
         h_s = h_sparse_list[i]
         
         # Encoder loss: predict sparse from dense
+        # IMPORTANT: Detach h_s so encoder loss only trains the encoder,
+        # not the sparse model. Otherwise sparse model learns to produce
+        # "predictable" activations rather than useful representations.
         h_s_pred = bridge_set.encode(i, h_d)
-        encoder_loss = nmse_loss(h_s_pred, h_s)
+        encoder_loss = nmse_loss(h_s_pred, h_s.detach())
         encoder_losses.append(encoder_loss)
         
         # Decoder loss: predict dense from sparse

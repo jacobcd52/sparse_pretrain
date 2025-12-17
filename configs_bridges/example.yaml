@@ -51,10 +51,10 @@ bridges:
   
   # Loss coefficients (all configurable, sum to total loss)
   coef_nmse: 1.0        # Normalized MSE reconstruction loss
-  coef_kl_d2s: 0.1      # KL for dense→sparse hybrid passes
-  coef_kl_s2d: 0.1      # KL for sparse→dense hybrid passes
+  coef_kl_d2s: 1.0      # KL for dense→sparse hybrid passes
+  coef_kl_s2d: 1.0      # KL for sparse→dense hybrid passes
   coef_ce_sparse: 1.0   # Cross-entropy on sparse model (standard LM loss)
-  coef_kl_sparse: 0.0   # KL(dense, sparse) distillation loss
+  coef_kl_sparse: 1.0   # KL(dense, sparse) distillation loss
 
 # =============================================================================
 # Sparsity Configuration (for sparse model)
@@ -110,7 +110,7 @@ training:
   # Training
   total_tokens: 2000000000   # 2B tokens
   batch_size: 128
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   
   # Mixed precision
   mixed_precision: bf16

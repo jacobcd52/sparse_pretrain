@@ -20,10 +20,10 @@ sparse_model:
 bridges:
   encoder_afrac: 0.25
   coef_nmse: 1.0
-  coef_kl_d2s: 0.1
-  coef_kl_s2d: 0.1
+  coef_kl_d2s: 1.0
+  coef_kl_s2d: 1.0
   coef_ce_sparse: 1.0
-  coef_kl_sparse: 0.0
+  coef_kl_sparse: 1.0
 sparsity:
   enable_weight_sparsity: true
   target_l0_fraction: 0.015625
@@ -53,7 +53,7 @@ training:
   tokenizer_name: SimpleStories/SimpleStories-1.25M
   total_tokens: 2000000000
   batch_size: 128
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   mixed_precision: bf16
   checkpoint_dir: checkpoints_bridges
   checkpoint_every_n_steps: 5000
