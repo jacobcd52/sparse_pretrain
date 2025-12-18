@@ -14,6 +14,13 @@ from .bridges import (
     GradientBuffer, HybridKLResult, KLTargetCache,
 )
 
+# Hooked model for interpretability (optional - requires transformer_lens)
+try:
+    from .hooked_model import HookedSparseGPT, HookedSparseGPTConfig
+    _HAS_HOOKED = True
+except ImportError:
+    _HAS_HOOKED = False
+
 __all__ = [
     # Core config
     "Config",
@@ -44,4 +51,7 @@ __all__ = [
     "GradientBuffer",
     "HybridKLResult",
     "KLTargetCache",
+    # Hooked model (if transformer_lens available)
+    "HookedSparseGPT",
+    "HookedSparseGPTConfig",
 ]

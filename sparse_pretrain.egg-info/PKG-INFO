@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: sparse-pretrain
+Version: 0.1.0
+Summary: Weight-sparse transformers with interpretable circuits
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.0.0
+Requires-Dist: transformers>=4.30.0
+Requires-Dist: huggingface-hub>=0.16.0
+Requires-Dist: jaxtyping>=0.2.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Provides-Extra: interpretability
+Requires-Dist: transformer-lens>=1.0.0; extra == "interpretability"
+
+# sparse_pretrain
