@@ -24,7 +24,7 @@ dense_model:
 # It will have weight and activation sparsity applied during training.
 sparse_model:
   n_layer: 2              # Must match dense model
-  d_model: 1024           # Can be larger than dense model
+  d_model: 2048           # Can be larger than dense model
   n_ctx: 512              # Context length
   d_head: 16              # Should typically match dense model
   d_mlp: null             # Defaults to 4 * d_model
@@ -62,7 +62,7 @@ bridges:
 # These settings apply to the sparse model only. Bridges are always dense.
 sparsity:
   enable_weight_sparsity: true
-  target_l0_fraction: 0.015625 # 1/64
+  target_l0_fraction: 0.00390625 # 1/256
   
   # Sparsity annealing schedule
   sparsity_anneal_start_fraction: 0.01
@@ -109,8 +109,8 @@ training:
   
   # Training
   total_tokens: 2000000000   # 2B tokens
-  batch_size: 128
-  gradient_accumulation_steps: 1
+  batch_size: 64
+  gradient_accumulation_steps: 2
   
   # Mixed precision
   mixed_precision: bf16
@@ -134,7 +134,7 @@ training:
   
   # W&B
   wandb_project: bridges_training
-  wandb_run_name: d128_e8_newfvu
+  wandb_run_name: d128_e16
   wandb_entity: null
   use_wandb: true
   
@@ -142,5 +142,5 @@ training:
   seed: 0
   
   # HuggingFace Hub (optional)
-  hf_repo: jacobcd52/ss_d128_e8_newfvu
+  hf_repo: jacobcd52/ss_d128_e16
 

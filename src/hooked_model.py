@@ -432,7 +432,7 @@ class HookedSparseGPT(HookedRootModule):
         self.tokenizer = tokenizer
         
         # Embedding
-        self.embed = nn.Embedding(cfg.d_vocab, cfg.d_model)
+        self.embed = nn.Embedding(cfg.d_vocab, cfg.d_model, dtype=cfg.dtype)
         self.hook_embed = HookPoint()  # [batch, pos, d_model]
         
         # Transformer blocks
@@ -446,7 +446,7 @@ class HookedSparseGPT(HookedRootModule):
         self.ln_final = norm_cls(cfg.d_model, dtype=cfg.dtype)
         
         # Unembedding
-        self.unembed = nn.Linear(cfg.d_model, cfg.d_vocab, bias=False)
+        self.unembed = nn.Linear(cfg.d_model, cfg.d_vocab, bias=False, dtype=cfg.dtype)
         
         # Setup hook dict (required by HookedRootModule)
         self.setup()

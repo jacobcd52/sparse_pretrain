@@ -271,28 +271,39 @@ def nmse_loss(
     eps: float = 1e-8,
 ) -> torch.Tensor:
     """
-    Compute Normalized Mean Squared Error.
+    Compute Normalized Mean Squared Error (FVU - Fraction of Variance Unexplained).
     
-    NMSE = MSE(pred, target) / Var(target).detach()
+    First computes per-token FVU, then averages:
+        fvu_per_token = (pred - target).pow(2).sum(-1) / (target - target.mean(batch_and_seq_dims)).pow(2).sum(-1)
+        fvu = fvu_per_token.mean()
     
     The denominator is detached to prevent weird optimization effects where
     one model learns high-variance directions to make NMSE artificially small.
     
     Args:
-        pred: Predicted activations
-        target: Target activations
+        pred: Predicted activations, shape (..., features)
+        target: Target activations, shape (..., features)
         eps: Small constant for numerical stability
         
     Returns:
-        Scalar NMSE loss
+        Scalar NMSE/FVU loss
     """
-    mse = F.mse_loss(pred, target)
-    # Compute variance across all dimensions except batch
-    # Flatten to (batch, features) then compute variance
-    target_flat = target.reshape(-1, target.shape[-1])
-    var = target_flat.var(dim=0).mean()  # Mean variance across features
+    # Compute mean over all dimensions except the last (features)
+    # This is the "batch_and_seq_dims" mean
+    batch_and_seq_dims = tuple(range(target.dim() - 1))
+    target_mean = target.mean(dim=batch_and_seq_dims, keepdim=True)
     
-    return mse / (var.detach() + eps)
+    # Per-token squared error summed over features
+    squared_error = (pred - target).pow(2).sum(-1)
+    
+    # Per-token squared deviation from global mean, summed over features
+    squared_deviation = (target - target_mean).pow(2).sum(-1)
+    
+    # Per-token FVU (detach denominator to prevent weird optimization)
+    fvu_per_token = squared_error / (squared_deviation.detach() + eps)
+    
+    # Average over all tokens
+    return fvu_per_token.mean()
 
 
 class BridgeNMSEResult:
