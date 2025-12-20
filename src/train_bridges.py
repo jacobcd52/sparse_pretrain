@@ -252,6 +252,187 @@ def save_checkpoint(
             shutil.rmtree(oldest)
 
 
+def upload_bridges_to_hub(
+    sparse_model: nn.Module,
+    bridge_set: "BridgeSet",
+    config: "FullBridgesConfig",
+    repo_id: str,
+    checkpoint_dir: str,
+    wandb_url: Optional[str] = None,
+):
+    """
+    Upload sparse model and bridges to HuggingFace Hub.
+    
+    Args:
+        sparse_model: The trained sparse model
+        bridge_set: The trained bridges
+        config: Full bridges training configuration
+        repo_id: HuggingFace repo ID (e.g., "username/model-name")
+        checkpoint_dir: Local checkpoint directory
+        wandb_url: Optional W&B run URL to include in README
+    """
+    from huggingface_hub import HfApi, create_repo
+    
+    print(f"\nUploading to HuggingFace Hub: {repo_id}")
+    
+    api = HfApi()
+    
+    # Create repo if it doesn't exist
+    try:
+        create_repo(repo_id, exist_ok=True, repo_type="model")
+    except Exception as e:
+        print(f"Note: {e}")
+    
+    # Save to checkpoint directory
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+    
+    # Save sparse model state dict
+    sparse_model_path = checkpoint_path / "sparse_model.bin"
+    torch.save(sparse_model.state_dict(), sparse_model_path)
+    
+    # Save bridges state dict
+    bridges_path = checkpoint_path / "bridges.bin"
+    torch.save(bridge_set.state_dict(), bridges_path)
+    
+    # Save config as JSON
+    config_path = checkpoint_path / "config.json"
+    config_dict = {
+        "dense_model": {
+            "repo_id": config.dense_model.repo_id,
+            "local_path": config.dense_model.local_path,
+        },
+        "sparse_model_config": {
+            "n_layer": config.sparse_model.n_layer,
+            "d_model": config.sparse_model.d_model,
+            "n_ctx": config.sparse_model.n_ctx,
+            "d_head": config.sparse_model.d_head,
+            "d_mlp": config.sparse_model.d_mlp,
+            "vocab_size": config.sparse_model.vocab_size,
+            "use_rms_norm": config.sparse_model.use_rms_norm,
+            "tie_embeddings": config.sparse_model.tie_embeddings,
+            "use_positional_embeddings": config.sparse_model.use_positional_embeddings,
+            "use_bigram_table": config.sparse_model.use_bigram_table,
+            "use_attention_sinks": config.sparse_model.use_attention_sinks,
+            "activation": config.sparse_model.activation,
+            "dropout": config.sparse_model.dropout,
+            "use_bias": config.sparse_model.use_bias,
+        },
+        "bridges_config": {
+            "encoder_afrac": config.bridges.encoder_afrac,
+            "coef_nmse": config.bridges.coef_nmse,
+            "coef_kl_d2s": config.bridges.coef_kl_d2s,
+            "coef_kl_s2d": config.bridges.coef_kl_s2d,
+            "coef_ce_sparse": config.bridges.coef_ce_sparse,
+            "coef_kl_sparse": config.bridges.coef_kl_sparse,
+        },
+        "sparsity_config": {
+            "enable_weight_sparsity": config.sparsity.enable_weight_sparsity,
+            "target_l0_fraction": config.sparsity.target_l0_fraction,
+            "enable_activation_sparsity": config.sparsity.enable_activation_sparsity,
+            "activation_topk_fraction": config.sparsity.activation_topk_fraction,
+        },
+        "training_config": {
+            "total_tokens": config.training.total_tokens,
+            "batch_size": config.training.batch_size,
+            "dataset_name": config.training.dataset_name,
+            "tokenizer_name": config.training.tokenizer_name,
+        },
+    }
+    with open(config_path, "w") as f:
+        json.dump(config_dict, f, indent=2)
+    
+    # Save the full YAML config
+    yaml_path = checkpoint_path / "training_config.yaml"
+    config.to_yaml(str(yaml_path))
+    
+    # Create README
+    readme_path = checkpoint_path / "README.md"
+    
+    # Build wandb section if URL is available
+    wandb_section = ""
+    if wandb_url:
+        wandb_section = f"""
+## Training Run
+
+- **W&B Run**: [{wandb_url}]({wandb_url})
+"""
+    
+    readme_content = f"""# {repo_id.split('/')[-1]}
+
+Weight-sparse transformer with bridges, trained with the procedure from Gao et al. (2025).
+
+This repo contains a sparse model and bridges that couple it to a frozen dense model.
+
+## Sparse Model Details
+
+- **Layers**: {config.sparse_model.n_layer}
+- **Model Dimension**: {config.sparse_model.d_model}
+- **Context Length**: {config.sparse_model.n_ctx}
+- **Head Dimension**: {config.sparse_model.d_head}
+- **Vocabulary Size**: {config.sparse_model.vocab_size}
+
+## Dense Model
+
+- **Source**: {config.dense_model.repo_id or config.dense_model.local_path}
+
+## Bridges
+
+- **Encoder AbsTopK Fraction**: {config.bridges.encoder_afrac}
+
+## Sparsity
+
+- **Weight Sparsity**: {config.sparsity.enable_weight_sparsity}
+- **Target L0 Fraction**: {config.sparsity.target_l0_fraction}
+- **Activation Sparsity**: {config.sparsity.enable_activation_sparsity}
+
+## Training
+
+- **Dataset**: {config.training.dataset_name}
+- **Tokenizer**: {config.training.tokenizer_name}
+- **Total Tokens**: {config.training.total_tokens:,}
+{wandb_section}
+## Usage
+
+```python
+import torch
+from huggingface_hub import hf_hub_download
+
+# Download sparse model and bridges
+sparse_model_path = hf_hub_download(repo_id="{repo_id}", filename="sparse_model.bin")
+bridges_path = hf_hub_download(repo_id="{repo_id}", filename="bridges.bin")
+config_path = hf_hub_download(repo_id="{repo_id}", filename="config.json")
+
+# Load (requires the SparseGPT and BridgeSet classes from this repo)
+sparse_state_dict = torch.load(sparse_model_path)
+bridges_state_dict = torch.load(bridges_path)
+```
+"""
+    with open(readme_path, "w") as f:
+        f.write(readme_content)
+    
+    # Upload files
+    files_to_upload = [
+        ("sparse_model.bin", sparse_model_path),
+        ("bridges.bin", bridges_path),
+        ("config.json", config_path),
+        ("training_config.yaml", yaml_path),
+        ("README.md", readme_path),
+    ]
+    
+    for filename, filepath in files_to_upload:
+        if filepath.exists():
+            print(f"  Uploading {filename}...")
+            api.upload_file(
+                path_or_fileobj=str(filepath),
+                path_in_repo=filename,
+                repo_id=repo_id,
+                repo_type="model",
+            )
+    
+    print(f"  Done! Model available at: https://huggingface.co/{repo_id}")
+
+
 def train_bridges(config: FullBridgesConfig):
     """
     Main bridges training function.
@@ -779,6 +960,17 @@ def train_bridges(config: FullBridgesConfig):
     )
     
     accelerator.print("Bridges training complete!")
+    
+    # Upload to HuggingFace Hub if configured
+    if accelerator.is_main_process and config.training.hf_repo:
+        upload_bridges_to_hub(
+            sparse_model=accelerator.unwrap_model(sparse_model),
+            bridge_set=accelerator.unwrap_model(bridge_set),
+            config=config,
+            repo_id=config.training.hf_repo,
+            checkpoint_dir=config.training.checkpoint_dir,
+            wandb_url=wandb_run_url,
+        )
     
     if accelerator.is_main_process and config.training.use_wandb:
         wandb.finish()
